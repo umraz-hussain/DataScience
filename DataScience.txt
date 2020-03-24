@@ -1,0 +1,691 @@
+import numpy as np
+import pandas as pd
+
+import warnings
+warnings.simplefilter('ignore')
+
+import os
+for dirname, _, filenames in os.walk('/kaggle/input'):
+    for filename in filenames:
+        print(os.path.join(dirname, filename))
+
+files(dataSets)
+(/kaggle/input/cat-in-the-dat-ii/train.csv
+/kaggle/input/cat-in-the-dat-ii/test.csv
+/kaggle/input/cat-in-the-dat-ii/sample_submission.csv)
+
+Load data--
+train = pd.read_csv('../input/cat-in-the-dat-ii/train.csv', index_col='id')
+test = pd.read_csv('../input/cat-in-the-dat-ii/test.csv', index_col='id')
+train.head(3).T
+
+def summary(df):
+    summary = pd.DataFrame(df.dtypes, columns=['dtypes'])
+    summary = summary.reset_index()
+    summary['Name'] = summary['index']
+    summary = summary[['Name', 'dtypes']]
+    summary['Missing'] = df.isnull().sum().values    
+    summary['Uniques'] = df.nunique().values
+    summary['First Value'] = df.loc[0].values
+    summary['Second Value'] = df.loc[1].values
+    summary['Third Value'] = df.loc[2].values
+    return summary
+
+
+summary(train)
+
+
+
+Handle missing values---
+
+train['missing_count'] = train.isnull().sum(axis=1)
+test['missing_count'] = test.isnull().sum(axis=1)
+
+missing_number = -99999
+missing_string = 'MISSING_STRING'
+
+numerical_features = [
+    'bin_0', 'bin_1', 'bin_2',
+    'ord_0',
+    'day', 'month'
+]
+
+string_features = [
+    'bin_3', 'bin_4',
+    'ord_1', 'ord_2', 'ord_3', 'ord_4', 'ord_5',
+    'nom_0', 'nom_1', 'nom_2', 'nom_3', 'nom_4', 'nom_5', 'nom_6', 'nom_7', 'nom_8', 'nom_9'
+]
+
+def impute(train, test, columns, value):
+    for column in columns:
+        train[column] = train[column].fillna(value)
+        test[column] = test[column].fillna(value)
+
+impute(train, test, numerical_features, missing_number)
+impute(train, test, string_features, missing_string)
+
+
+Feature engineering---
+
+train['ord_5_1'] = train['ord_5'].str[0]
+train['ord_5_2'] = train['ord_5'].str[1]
+
+train.loc[train['ord_5'] == missing_string, 'ord_5_1'] = missing_string
+train.loc[train['ord_5'] == missing_string, 'ord_5_2'] = missing_string
+
+train = train.drop('ord_5', axis=1)
+
+
+test['ord_5_1'] = test['ord_5'].str[0]
+test['ord_5_2'] = test['ord_5'].str[1]
+
+test.loc[test['ord_5'] == missing_string, 'ord_5_1'] = missing_string
+test.loc[test['ord_5'] == missing_string, 'ord_5_2'] = missing_string
+
+test = test.drop('ord_5', axis=1)
+
+simple_features = [
+    'missing_count'
+]
+
+oe_features = [
+    'bin_0', 'bin_1', 'bin_2', 'bin_3', 'bin_4',
+    'nom_0', 'nom_1', 'nom_2', 'nom_3', 'nom_4',
+    'ord_0', 'ord_1', 'ord_2', 'ord_3', 'ord_4', 'ord_5_1', 'ord_5_2',
+    'day', 'month'
+]
+
+ohe_features = oe_features
+
+target_features = [
+    'nom_5', 'nom_6', 'nom_7', 'nom_8', 'nom_9'
+]
+
+Extract target variable----
+
+y_train = train['target'].copy()
+x_train = train.drop('target', axis=1)
+del train
+
+x_test = test.copy()
+del test
+
+Standard scaler----
+
+from sklearn.preprocessing import StandardScaler
+
+
+scaler = StandardScaler()
+simple_x_train = scaler.fit_transform(x_train[simple_features])
+simple_x_test = scaler.transform(x_test[simple_features])
+
+OHE---
+
+from sklearn.preprocessing import OneHotEncoder
+
+
+ohe = OneHotEncoder(dtype='uint16', handle_unknown="ignore")
+ohe_x_train = ohe.fit_transform(x_train[ohe_features])
+ohe_x_test = ohe.transform(x_test[ohe_features])
+
+
+Ordinal encoder---
+
+from sklearn.preprocessing import OrdinalEncoder
+
+
+oe = OrdinalEncoder()
+oe_x_train = oe.fit_transform(x_train[oe_features])
+oe_x_test = oe.transform(x_test[oe_features])
+
+
+Target encoder---
+
+from category_encoders import TargetEncoder
+from sklearn.model_selection import StratifiedKFold
+
+
+def transform(transformer, x_train, y_train, cv):
+    oof = pd.DataFrame(index=x_train.index, columns=x_train.columns)
+    for train_idx, valid_idx in cv.split(x_train, y_train):
+        x_train_train = x_train.loc[train_idx]
+        y_train_train = y_train.loc[train_idx]
+        x_train_valid = x_train.loc[valid_idx]
+        transformer.fit(x_train_train, y_train_train)
+        oof_part = transformer.transform(x_train_valid)
+        oof.loc[valid_idx] = oof_part
+    return oof
+
+target = TargetEncoder(drop_invariant=True, smoothing=0.2)
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+target_x_train = transform(target, x_train[target_features], y_train, cv).astype('float')
+
+target.fit(x_train[target_features], y_train)
+target_x_test = target.transform(x_test[target_features]).astype('float')
+
+Merge for Logit----
+
+import scipy
+
+
+x_train = scipy.sparse.hstack([ohe_x_train, simple_x_train, target_x_train]).tocsr()
+x_test = scipy.sparse.hstack([ohe_x_test, simple_x_test, target_x_test]).tocsr()
+
+Logistic regression
+
+from sklearn.linear_model import LogisticRegression
+
+
+logit = LogisticRegression(C=0.54321, solver='lbfgs', max_iter=10000)
+logit.fit(x_train, y_train)
+y_pred_logit = logit.predict_proba(x_test)[:, 1]
+
+Merge for Keras----
+
+x_train = np.concatenate((oe_x_train, simple_x_train, target_x_train), axis=1)
+x_test = np.concatenate((oe_x_test, simple_x_test, target_x_test), axis=1)
+
+categorial_part = oe_x_train.shape[1]
+
+Keras
+
+import tensorflow as tf
+
+from sklearn.metrics import roc_auc_score
+
+
+def auc(y_true, y_pred):
+    def fallback_auc(y_true, y_pred):
+        try:
+            return roc_auc_score(y_true, y_pred)
+        except:
+            return 0.5
+    return tf.py_function(fallback_auc, (y_true, y_pred), tf.double)
+
+def make_model(data, categorial_part):
+    
+    inputs = []
+    
+    categorial_outputs = []
+    for idx in range(categorial_part):
+        n_unique = np.unique(data[:,idx]).shape[0]
+        n_embeddings = int(min(np.ceil(n_unique / 2), 50))
+        inp = tf.keras.layers.Input(shape=(1,))
+        inputs.append(inp)
+        x = tf.keras.layers.Embedding(n_unique + 1, n_embeddings)(inp)
+        x = tf.keras.layers.SpatialDropout1D(0.3)(x)
+        x = tf.keras.layers.Reshape((n_embeddings,))(x)
+        categorial_outputs.append(x)
+    
+    x1 = tf.keras.layers.Concatenate()(categorial_outputs)
+    x1 = tf.keras.layers.BatchNormalization()(x1)
+    
+    inp = tf.keras.layers.Input(shape=(data.shape[1] - categorial_part,))
+    inputs.append(inp)
+    x2 = tf.keras.layers.BatchNormalization()(inp)
+    
+    x = tf.keras.layers.Concatenate()([x1, x2])
+    x = tf.keras.layers.Dense(128, activation='relu')(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    
+    y = tf.keras.layers.Dense(1, activation='sigmoid', name='dense_output')(x)
+    
+    print('Expected number of inputs:', len(inputs))
+    model = tf.keras.Model(inputs=inputs, outputs=y)
+    model.compile(loss='binary_crossentropy', optimizer=tf.keras.optimizers.Adam(learning_rate=3e-5), metrics=['accuracy', auc])
+    return model
+
+def make_inputs(data, categorial_part):
+    inputs = []
+    for idx in range(categorial_part):
+        inputs.append(data[:, idx])
+    inputs.append(data[:, categorial_part:])
+    return inputs
+
+from sklearn.model_selection import KFold
+import tensorflow.keras.backend as K
+
+
+n_splits = 50
+
+trained_estimators = []
+histories = []
+scores = []
+
+cv = KFold(n_splits=n_splits, random_state=42)
+for train_idx, valid_idx in cv.split(x_train, y_train):
+    
+    x_train_train = x_train[train_idx]
+    y_train_train = y_train[train_idx]
+    x_train_valid = x_train[valid_idx]
+    y_train_valid = y_train[valid_idx]
+    
+    K.clear_session()
+    
+    estimator = make_model(x_train, categorial_part)
+    
+    es = tf.keras.callbacks.EarlyStopping(monitor='val_auc', min_delta=0.001, patience=10,
+                                          verbose=1, mode='max', restore_best_weights=True)
+    
+    rl = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_auc', factor=0.5, patience=3, min_lr=1e-6, mode='max', verbose=1)
+    
+    history = estimator.fit(make_inputs(x_train_train, categorial_part), y_train_train, batch_size=1024, epochs=100, callbacks=[es, rl],
+                            validation_data=(make_inputs(x_train_valid, categorial_part), y_train_valid))
+    trained_estimators.append(estimator)
+    histories.append(history)
+    
+    oof_part = estimator.predict(make_inputs(x_train_valid, categorial_part))
+    score = roc_auc_score(y_train_valid, oof_part)
+    print('Fold score:', score)
+    scores.append(score)
+
+
+sample input and output----
+
+Expected number of inputs: 20
+Train on 588000 samples, validate on 12000 samples
+Epoch 1/100
+588000/588000 [==============================] - 15s 25us/sample - loss: 0.6419 - accuracy: 0.6325 - auc: 0.5686 - val_loss: 0.5263 - val_accuracy: 0.8142 - val_auc: 0.6776
+Epoch 2/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4818 - accuracy: 0.7937 - auc: 0.6499 - val_loss: 0.4329 - val_accuracy: 0.8185 - val_auc: 0.7370
+Epoch 3/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4503 - accuracy: 0.8078 - auc: 0.6941 - val_loss: 0.4173 - val_accuracy: 0.8213 - val_auc: 0.7571
+Epoch 4/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4383 - accuracy: 0.8118 - auc: 0.7181 - val_loss: 0.4102 - val_accuracy: 0.8236 - val_auc: 0.7672
+Epoch 5/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4316 - accuracy: 0.8131 - auc: 0.7317 - val_loss: 0.4070 - val_accuracy: 0.8242 - val_auc: 0.7717
+Epoch 6/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4277 - accuracy: 0.8145 - auc: 0.7391 - val_loss: 0.4053 - val_accuracy: 0.8240 - val_auc: 0.7743
+Epoch 7/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4245 - accuracy: 0.8158 - auc: 0.7443 - val_loss: 0.4044 - val_accuracy: 0.8245 - val_auc: 0.7757
+Epoch 8/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4220 - accuracy: 0.8171 - auc: 0.7481 - val_loss: 0.4038 - val_accuracy: 0.8248 - val_auc: 0.7765
+Epoch 9/100
+588000/588000 [==============================] - 11s 18us/sample - loss: 0.4197 - accuracy: 0.8172 - auc: 0.7520 - val_loss: 0.4033 - val_accuracy: 0.8259 - val_auc: 0.7774
+Epoch 10/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4176 - accuracy: 0.8180 - auc: 0.7550 - val_loss: 0.4032 - val_accuracy: 0.8257 - val_auc: 0.7777
+Epoch 11/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4166 - accuracy: 0.8187 - auc: 0.7563 - val_loss: 0.4029 - val_accuracy: 0.8257 - val_auc: 0.7781
+Epoch 12/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4150 - accuracy: 0.8195 - auc: 0.7588 - val_loss: 0.4029 - val_accuracy: 0.8263 - val_auc: 0.7783
+Epoch 13/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4142 - accuracy: 0.8194 - auc: 0.7600 - val_loss: 0.4029 - val_accuracy: 0.8261 - val_auc: 0.7786
+Epoch 14/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4128 - accuracy: 0.8199 - auc: 0.7623 - val_loss: 0.4026 - val_accuracy: 0.8257 - val_auc: 0.7789
+Epoch 15/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4117 - accuracy: 0.8207 - auc: 0.7637 - val_loss: 0.4025 - val_accuracy: 0.8260 - val_auc: 0.7791
+Epoch 16/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4110 - accuracy: 0.8206 - auc: 0.7648 - val_loss: 0.4024 - val_accuracy: 0.8254 - val_auc: 0.7793
+Epoch 17/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4105 - accuracy: 0.8211 - auc: 0.7656 - val_loss: 0.4023 - val_accuracy: 0.8256 - val_auc: 0.7797
+Epoch 18/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4101 - accuracy: 0.8210 - auc: 0.7663 - val_loss: 0.4022 - val_accuracy: 0.8262 - val_auc: 0.7798
+Epoch 19/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4095 - accuracy: 0.8214 - auc: 0.7672 - val_loss: 0.4021 - val_accuracy: 0.8259 - val_auc: 0.7800
+Epoch 20/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4089 - accuracy: 0.8214 - auc: 0.7680 - val_loss: 0.4021 - val_accuracy: 0.8263 - val_auc: 0.7802
+Epoch 21/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4087 - accuracy: 0.8216 - auc: 0.7684 - val_loss: 0.4021 - val_accuracy: 0.8263 - val_auc: 0.7802
+Epoch 22/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4081 - accuracy: 0.8217 - auc: 0.7694 - val_loss: 0.4021 - val_accuracy: 0.8265 - val_auc: 0.7802
+Epoch 23/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4076 - accuracy: 0.8222 - auc: 0.7701 - val_loss: 0.4021 - val_accuracy: 0.8267 - val_auc: 0.7805
+Epoch 24/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4071 - accuracy: 0.8221 - auc: 0.7707 - val_loss: 0.4020 - val_accuracy: 0.8268 - val_auc: 0.7805
+Epoch 25/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4075 - accuracy: 0.8222 - auc: 0.7702 - val_loss: 0.4017 - val_accuracy: 0.8270 - val_auc: 0.7808
+Epoch 26/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4070 - accuracy: 0.8222 - auc: 0.7711 - val_loss: 0.4017 - val_accuracy: 0.8271 - val_auc: 0.7808
+Epoch 27/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4067 - accuracy: 0.8226 - auc: 0.7716 - val_loss: 0.4016 - val_accuracy: 0.8269 - val_auc: 0.7810
+Epoch 28/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4067 - accuracy: 0.8222 - auc: 0.7715 - val_loss: 0.4017 - val_accuracy: 0.8277 - val_auc: 0.7811
+Epoch 29/100
+588000/588000 [==============================] - 11s 18us/sample - loss: 0.4066 - accuracy: 0.8225 - auc: 0.7716 - val_loss: 0.4015 - val_accuracy: 0.8268 - val_auc: 0.7810
+Epoch 30/100
+588000/588000 [==============================] - 8s 14us/sample - loss: 0.4060 - accuracy: 0.8228 - auc: 0.7725 - val_loss: 0.4016 - val_accuracy: 0.8270 - val_auc: 0.7811
+Epoch 31/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4062 - accuracy: 0.8223 - auc: 0.7723 - val_loss: 0.4015 - val_accuracy: 0.8273 - val_auc: 0.7811
+Epoch 32/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4092 - accuracy: 0.8213 - auc: 0.7679 - val_loss: 0.4048 - val_accuracy: 0.8211 - val_auc: 0.7788
+Epoch 18/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4096 - accuracy: 0.8209 - auc: 0.7672 - val_loss: 0.4049 - val_accuracy: 0.8209 - val_auc: 0.7789
+Epoch 19/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4089 - accuracy: 0.8214 - auc: 0.7681 - val_loss: 0.4046 - val_accuracy: 0.8217 - val_auc: 0.7790
+Epoch 20/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4088 - accuracy: 0.8216 - auc: 0.7684 - val_loss: 0.4047 - val_accuracy: 0.8215 - val_auc: 0.7790
+Epoch 21/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4078 - accuracy: 0.8217 - auc: 0.7699 - val_loss: 0.4045 - val_accuracy: 0.8217 - val_auc: 0.7792
+Epoch 22/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4076 - accuracy: 0.8217 - auc: 0.7705 - val_loss: 0.4045 - val_accuracy: 0.8212 - val_auc: 0.7792
+Epoch 23/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4074 - accuracy: 0.8220 - auc: 0.7705 - val_loss: 0.4046 - val_accuracy: 0.8211 - val_auc: 0.7792
+Epoch 24/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4072 - accuracy: 0.8220 - auc: 0.7708 - val_loss: 0.4044 - val_accuracy: 0.8210 - val_auc: 0.7794
+Epoch 25/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4068 - accuracy: 0.8223 - auc: 0.7714 - val_loss: 0.4044 - val_accuracy: 0.8208 - val_auc: 0.7794
+Epoch 26/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4067 - accuracy: 0.8222 - auc: 0.7717 - val_loss: 0.4043 - val_accuracy: 0.8207 - val_auc: 0.7794
+Epoch 27/100
+587776/588000 [============================>.] - ETA: 0s - loss: 0.4061 - accuracy: 0.8225 - auc: 0.7725
+Epoch 00027: ReduceLROnPlateau reducing learning rate to 1.4999999621068127e-05.
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4061 - accuracy: 0.8225 - auc: 0.7726 - val_loss: 0.4042 - val_accuracy: 0.8205 - val_auc: 0.7795
+Epoch 28/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4059 - accuracy: 0.8224 - auc: 0.7728 - val_loss: 0.4043 - val_accuracy: 0.8205 - val_auc: 0.7795
+Epoch 29/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4060 - accuracy: 0.8227 - auc: 0.7726 - val_loss: 0.4043 - val_accuracy: 0.8207 - val_auc: 0.7795
+Epoch 30/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4062 - accuracy: 0.8222 - auc: 0.7726 - val_loss: 0.4043 - val_accuracy: 0.8208 - val_auc: 0.7794
+Epoch 31/100
+585728/588000 [============================>.] - ETA: 0s - loss: 0.4059 - accuracy: 0.8225 - auc: 0.7728Restoring model weights from the end of the best epoch.
+
+Epoch 00031: ReduceLROnPlateau reducing learning rate to 7.499999810534064e-06.
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4059 - accuracy: 0.8224 - auc: 0.7728 - val_loss: 0.4043 - val_accuracy: 0.8210 - val_auc: 0.7794
+Epoch 00031: early stopping
+Fold score: 0.7791362366050296
+Expected number of inputs: 20
+Train on 588000 samples, validate on 12000 samples
+Epoch 1/100
+588000/588000 [==============================] - 14s 24us/sample - loss: 0.5815 - accuracy: 0.7077 - auc: 0.5480 - val_loss: 0.5167 - val_accuracy: 0.8116 - val_auc: 0.6540
+Epoch 2/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4750 - accuracy: 0.8039 - auc: 0.6359 - val_loss: 0.4346 - val_accuracy: 0.8146 - val_auc: 0.7395
+Epoch 3/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4472 - accuracy: 0.8109 - auc: 0.6952 - val_loss: 0.4163 - val_accuracy: 0.8177 - val_auc: 0.7652
+Epoch 4/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4342 - accuracy: 0.8136 - auc: 0.7235 - val_loss: 0.4088 - val_accuracy: 0.8234 - val_auc: 0.7735
+Epoch 5/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4285 - accuracy: 0.8145 - auc: 0.7361 - val_loss: 0.4059 - val_accuracy: 0.8235 - val_auc: 0.7767
+Epoch 6/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4245 - accuracy: 0.8158 - auc: 0.7437 - val_loss: 0.4044 - val_accuracy: 0.8232 - val_auc: 0.7782
+Epoch 7/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4220 - accuracy: 0.8168 - auc: 0.7479 - val_loss: 0.4035 - val_accuracy: 0.8236 - val_auc: 0.7795
+Epoch 8/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4198 - accuracy: 0.8175 - auc: 0.7513 - val_loss: 0.4032 - val_accuracy: 0.8235 - val_auc: 0.7801
+Epoch 9/100
+588000/588000 [==============================] - 10s 17us/sample - loss: 0.4182 - accuracy: 0.8180 - auc: 0.7537 - val_loss: 0.4029 - val_accuracy: 0.8236 - val_auc: 0.7807
+Epoch 10/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4162 - accuracy: 0.8189 - auc: 0.7568 - val_loss: 0.4026 - val_accuracy: 0.8240 - val_auc: 0.7813
+Epoch 11/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4753 - accuracy: 0.8038 - auc: 0.6368 - val_loss: 0.4285 - val_accuracy: 0.8175 - val_auc: 0.7463
+Epoch 3/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4479 - accuracy: 0.8107 - auc: 0.6936 - val_loss: 0.4103 - val_accuracy: 0.8206 - val_auc: 0.7709
+Epoch 4/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4355 - accuracy: 0.8125 - auc: 0.7215 - val_loss: 0.4025 - val_accuracy: 0.8230 - val_auc: 0.7795
+Epoch 5/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4058 - accuracy: 0.8228 - auc: 0.7727 - val_loss: 0.4052 - val_accuracy: 0.8213 - val_auc: 0.7847
+Epoch 31/100
+587776/588000 [============================>.] - ETA: 0s - loss: 0.4055 - accuracy: 0.8226 - auc: 0.7731Restoring model weights from the end of the best epoch.
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4055 - accuracy: 0.8227 - auc: 0.7731 - val_loss: 0.4053 - val_accuracy: 0.8215 - val_auc: 0.7846
+Epoch 00031: early stopping
+Fold score: 0.7844131191654575
+Expected number of inputs: 20
+Train on 588000 samples, validate on 12000 samples
+Epoch 1/100
+588000/588000 [==============================] - 14s 23us/sample - loss: 0.5517 - accuracy: 0.7348 - auc: 0.5821 - val_loss: 0.4945 - val_accuracy: 0.8159 - val_auc: 0.7103
+Epoch 2/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4121 - accuracy: 0.8204 - auc: 0.7632 - val_loss: 0.4002 - val_accuracy: 0.8223 - val_auc: 0.7856
+Epoch 16/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4113 - accuracy: 0.8207 - auc: 0.7645 - val_loss: 0.4002 - val_accuracy: 0.8224 - val_auc: 0.7858
+Epoch 17/100
+588000/588000 [==============================] - 10s 17us/sample - loss: 0.4103 - accuracy: 0.8210 - auc: 0.7660 - val_loss: 0.4002 - val_accuracy: 0.8223 - val_auc: 0.7858
+Epoch 18/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4095 - accuracy: 0.8214 - auc: 0.7672 - val_loss: 0.4000 - val_accuracy: 0.8219 - val_auc: 0.7863
+Epoch 19/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4364 - accuracy: 0.8127 - auc: 0.7205 - val_loss: 0.4105 - val_accuracy: 0.8226 - val_auc: 0.7746
+Epoch 5/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4304 - accuracy: 0.8143 - auc: 0.7331 - val_loss: 0.4070 - val_accuracy: 0.8240 - val_auc: 0.7787
+Epoch 6/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4265 - accuracy: 0.8150 - auc: 0.7408 - val_loss: 0.4053 - val_accuracy: 0.8235 - val_auc: 0.7807
+Epoch 7/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4291 - accuracy: 0.8144 - auc: 0.7359 - val_loss: 0.3990 - val_accuracy: 0.8258 - val_auc: 0.7781
+Epoch 6/100
+588000/588000 [==============================] - 11s 18us/sample - loss: 0.4249 - accuracy: 0.8153 - auc: 0.7437 - val_loss: 0.3975 - val_accuracy: 0.8260 - val_auc: 0.7801
+Epoch 7/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4222 - accuracy: 0.8165 - auc: 0.7482 - val_loss: 0.3969 - val_accuracy: 0.8263 - val_auc: 0.7811
+Epoch 8/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4267 - accuracy: 0.8147 - auc: 0.7413 - val_loss: 0.4038 - val_accuracy: 0.8222 - val_auc: 0.7818
+Epoch 7/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4244 - accuracy: 0.8157 - auc: 0.7453 - val_loss: 0.4031 - val_accuracy: 0.8218 - val_auc: 0.7827
+Epoch 8/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4222 - accuracy: 0.8162 - auc: 0.7486 - val_loss: 0.4025 - val_accuracy: 0.8221 - val_auc: 0.7835
+Epoch 9/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4061 - accuracy: 0.8224 - auc: 0.7726 - val_loss: 0.3925 - val_accuracy: 0.8280 - val_auc: 0.7885
+Epoch 31/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4060 - accuracy: 0.8226 - auc: 0.7727 - val_loss: 0.3926 - val_accuracy: 0.8282 - val_auc: 0.7886
+Epoch 32/100
+584704/588000 [============================>.] - ETA: 0s - loss: 0.4057 - accuracy: 0.8226 - auc: 0.7734Restoring model weights from the end of the best epoch.
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4057 - accuracy: 0.8226 - auc: 0.7733 - val_loss: 0.3925 - val_accuracy: 0.8277 - val_auc: 0.7886
+Epoch 00032: early stopping
+Fold score: 0.7885398654916511
+Expected number of inputs: 20
+Train on 588000 samples, validate on 12000 samples
+Epoch 1/100
+588000/588000 [==============================] - 14s 24us/sample - loss: 0.6884 - accuracy: 0.5824 - auc: 0.5445 - val_loss: 0.5454 - val_accuracy: 0.8048 - val_auc: 0.6535
+Epoch 2/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4920 - accuracy: 0.7870 - auc: 0.6391 - val_loss: 0.4404 - val_accuracy: 0.8113 - val_auc: 0.7375
+Epoch 3/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4511 - accuracy: 0.8076 - auc: 0.6930 - val_loss: 0.4199 - val_accuracy: 0.8141 - val_auc: 0.7642
+Epoch 4/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4076 - accuracy: 0.8224 - auc: 0.7697 - val_loss: 0.4058 - val_accuracy: 0.8173 - val_auc: 0.7905
+Epoch 24/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4077 - accuracy: 0.8219 - auc: 0.7698 - val_loss: 0.4058 - val_accuracy: 0.8176 - val_auc: 0.7905
+Epoch 25/100
+586752/588000 [============================>.] - ETA: 0s - loss: 0.4072 - accuracy: 0.8222 - auc: 0.7705Restoring model weights from the end of the best epoch.
+
+Epoch 00025: ReduceLROnPlateau reducing learning rate to 1.4999999621068127e-05.
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4073 - accuracy: 0.8223 - auc: 0.7703 - val_loss: 0.4057 - val_accuracy: 0.8178 - val_auc: 0.7907
+Epoch 00025: early stopping
+Fold score: 0.7897142453119868
+Expected number of inputs: 20
+Train on 588000 samples, validate on 12000 samples
+Epoch 1/100
+588000/588000 [==============================] - 10s 17us/sample - loss: 0.4118 - accuracy: 0.8205 - auc: 0.7633 - val_loss: 0.3996 - val_accuracy: 0.8217 - val_auc: 0.7924
+Epoch 16/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4112 - accuracy: 0.8210 - auc: 0.7645 - val_loss: 0.3994 - val_accuracy: 0.8220 - val_auc: 0.7927
+Epoch 17/100
+588000/588000 [==============================] - 8s 14us/sample - loss: 0.4106 - accuracy: 0.8210 - auc: 0.7653 - val_loss: 0.3994 - val_accuracy: 0.8223 - val_auc: 0.7930
+Epoch 18/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4099 - accuracy: 0.8210 - auc: 0.7664 - val_loss: 0.3991 - val_accuracy: 0.8224 - val_auc: 0.7934
+Epoch 19/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4233 - accuracy: 0.8161 - auc: 0.7458 - val_loss: 0.4022 - val_accuracy: 0.8256 - val_auc: 0.7769
+Epoch 7/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4208 - accuracy: 0.8169 - auc: 0.7499 - val_loss: 0.4014 - val_accuracy: 0.8250 - val_auc: 0.7780
+Epoch 8/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4185 - accuracy: 0.8179 - auc: 0.7535 - val_loss: 0.4009 - val_accuracy: 0.8257 - val_auc: 0.7788
+Epoch 9/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4068 - accuracy: 0.8220 - auc: 0.7713 - val_loss: 0.4010 - val_accuracy: 0.8233 - val_auc: 0.7897
+Epoch 25/100
+588000/588000 [==============================] - 10s 17us/sample - loss: 0.4072 - accuracy: 0.8223 - auc: 0.7705 - val_loss: 0.4010 - val_accuracy: 0.8231 - val_auc: 0.7897
+Epoch 26/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4067 - accuracy: 0.8223 - auc: 0.7713 - val_loss: 0.4009 - val_accuracy: 0.8232 - val_auc: 0.7899
+Epoch 27/100
+588000/588000 [==============================] - 8s 14us/sample - loss: 0.4065 - accuracy: 0.8225 - auc: 0.7717 - val_loss: 0.4009 - val_accuracy: 0.8230 - val_auc: 0.7899
+Epoch 28/100
+588000/588000 [==============================] - 8s 14us/sample - loss: 0.4089 - accuracy: 0.8211 - auc: 0.7685 - val_loss: 0.4018 - val_accuracy: 0.8255 - val_auc: 0.7802
+Epoch 19/100
+588000/588000 [==============================] - 8s 14us/sample - loss: 0.4086 - accuracy: 0.8216 - auc: 0.7686 - val_loss: 0.4017 - val_accuracy: 0.8253 - val_auc: 0.7803
+Epoch 20/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4080 - accuracy: 0.8217 - auc: 0.7696 - val_loss: 0.4019 - val_accuracy: 0.8250 - val_auc: 0.7803
+Epoch 21/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4126 - accuracy: 0.8195 - auc: 0.7625 - val_loss: 0.3938 - val_accuracy: 0.8320 - val_auc: 0.7838
+Epoch 14/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4111 - accuracy: 0.8206 - auc: 0.7649 - val_loss: 0.3940 - val_accuracy: 0.8323 - val_auc: 0.7838
+Epoch 15/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4110 - accuracy: 0.8208 - auc: 0.7650 - val_loss: 0.3939 - val_accuracy: 0.8319 - val_auc: 0.7840
+Epoch 16/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4237 - accuracy: 0.8163 - auc: 0.7459 - val_loss: 0.3969 - val_accuracy: 0.8267 - val_auc: 0.7768
+Epoch 8/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4219 - accuracy: 0.8167 - auc: 0.7489 - val_loss: 0.3962 - val_accuracy: 0.8272 - val_auc: 0.7781
+Epoch 9/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4195 - accuracy: 0.8177 - auc: 0.7526 - val_loss: 0.3955 - val_accuracy: 0.8277 - val_auc: 0.7792
+Epoch 10/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4180 - accuracy: 0.8182 - auc: 0.7547 - val_loss: 0.3952 - val_accuracy: 0.8276 - val_auc: 0.7797
+Epoch 11/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4772 - accuracy: 0.8001 - auc: 0.6456 - val_loss: 0.4285 - val_accuracy: 0.8167 - val_auc: 0.7501
+Epoch 3/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4461 - accuracy: 0.8103 - auc: 0.6993 - val_loss: 0.4102 - val_accuracy: 0.8194 - val_auc: 0.7731
+Epoch 4/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4339 - accuracy: 0.8136 - auc: 0.7250 - val_loss: 0.4028 - val_accuracy: 0.8237 - val_auc: 0.7815
+Epoch 5/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4085 - accuracy: 0.8216 - auc: 0.7688 - val_loss: 0.4014 - val_accuracy: 0.8226 - val_auc: 0.7844
+Epoch 20/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4082 - accuracy: 0.8217 - auc: 0.7691 - val_loss: 0.4015 - val_accuracy: 0.8228 - val_auc: 0.7844
+Epoch 21/100
+588000/588000 [==============================] - 10s 17us/sample - loss: 0.4081 - accuracy: 0.8220 - auc: 0.7691 - val_loss: 0.4016 - val_accuracy: 0.8232 - val_auc: 0.7843
+Epoch 22/100
+586752/588000 [============================>.] - ETA: 0s - loss: 0.4075 - accuracy: 0.8222 - auc: 0.7703
+Epoch 00022: ReduceLROnPlateau reducing learning rate to 1.4999999621068127e-05.
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4074 - accuracy: 0.8222 - auc: 0.7703 - val_loss: 0.4014 - val_accuracy: 0.8235 - val_auc: 0.7845
+Epoch 23/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4076 - accuracy: 0.8220 - auc: 0.7700 - val_loss: 0.4013 - val_accuracy: 0.8238 - val_auc: 0.7845
+Epoch 24/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4072 - accuracy: 0.8222 - auc: 0.7708 - val_loss: 0.4014 - val_accuracy: 0.8237 - val_auc: 0.7845
+Epoch 25/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4073 - accuracy: 0.8222 - auc: 0.7705 - val_loss: 0.4014 - val_accuracy: 0.8236 - val_auc: 0.7845
+Epoch 26/100
+587776/588000 [============================>.] - ETA: 0s - loss: 0.4071 - accuracy: 0.8221 - auc: 0.7709Restoring model weights from the end of the best epoch.
+
+Epoch 00026: ReduceLROnPlateau reducing learning rate to 7.499999810534064e-06.
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4071 - accuracy: 0.8221 - auc: 0.7708 - val_loss: 0.4014 - val_accuracy: 0.8236 - val_auc: 0.7845
+Epoch 00026: early stopping
+Fold score: 0.7836498556599698
+Expected number of inputs: 20
+Train on 588000 samples, validate on 12000 samples
+Epoch 1/100
+588000/588000 [==============================] - 15s 25us/sample - loss: 0.5381 - accuracy: 0.7526 - auc: 0.5787 - val_loss: 0.4964 - val_accuracy: 0.8138 - val_auc: 0.7071
+Epoch 2/100
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4601 - accuracy: 0.8081 - auc: 0.6672 - val_loss: 0.4221 - val_accuracy: 0.8185 - val_auc: 0.7597
+Epoch 3/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4413 - accuracy: 0.8119 - auc: 0.7089 - val_loss: 0.4096 - val_accuracy: 0.8223 - val_auc: 0.7744
+Epoch 4/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4320 - accuracy: 0.8143 - auc: 0.7287 - val_loss: 0.4040 - val_accuracy: 0.8222 - val_auc: 0.7805
+Epoch 5/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4276 - accuracy: 0.8152 - auc: 0.7379 - val_loss: 0.4011 - val_accuracy: 0.8239 - val_auc: 0.7846
+Epoch 6/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4134 - accuracy: 0.8200 - auc: 0.7613 - val_loss: 0.3970 - val_accuracy: 0.8282 - val_auc: 0.7826
+Epoch 12/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4125 - accuracy: 0.8203 - auc: 0.7627 - val_loss: 0.3968 - val_accuracy: 0.8286 - val_auc: 0.7829
+Epoch 13/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4116 - accuracy: 0.8200 - auc: 0.7643 - val_loss: 0.3967 - val_accuracy: 0.8285 - val_auc: 0.7831
+Epoch 14/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4183 - accuracy: 0.8182 - auc: 0.7535 - val_loss: 0.4011 - val_accuracy: 0.8217 - val_auc: 0.7914
+Epoch 9/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4160 - accuracy: 0.8193 - auc: 0.7571 - val_loss: 0.4011 - val_accuracy: 0.8221 - val_auc: 0.7916
+Epoch 10/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4150 - accuracy: 0.8192 - auc: 0.7586 - val_loss: 0.4005 - val_accuracy: 0.8223 - val_auc: 0.7920
+Epoch 11/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4284 - accuracy: 0.8146 - auc: 0.7371 - val_loss: 0.4030 - val_accuracy: 0.8251 - val_auc: 0.7707
+Epoch 6/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4252 - accuracy: 0.8159 - auc: 0.7424 - val_loss: 0.4012 - val_accuracy: 0.8245 - val_auc: 0.7733
+Epoch 7/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4218 - accuracy: 0.8167 - auc: 0.7487 - val_loss: 0.3998 - val_accuracy: 0.8251 - val_auc: 0.7752
+Epoch 8/100
+585728/588000 [============================>.] - ETA: 0s - loss: 0.4066 - accuracy: 0.8222 - auc: 0.7718
+Epoch 00029: ReduceLROnPlateau reducing learning rate to 7.499999810534064e-06.
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4066 - accuracy: 0.8223 - auc: 0.7718 - val_loss: 0.3941 - val_accuracy: 0.8265 - val_auc: 0.7913
+Epoch 30/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4064 - accuracy: 0.8225 - auc: 0.7720 - val_loss: 0.3941 - val_accuracy: 0.8266 - val_auc: 0.7913
+Epoch 31/100
+585728/588000 [============================>.] - ETA: 0s - loss: 0.4063 - accuracy: 0.8228 - auc: 0.7724Restoring model weights from the end of the best epoch.
+588000/588000 [==============================] - 10s 16us/sample - loss: 0.4063 - accuracy: 0.8228 - auc: 0.7724 - val_loss: 0.3940 - val_accuracy: 0.8267 - val_auc: 0.7913
+Epoch 00031: early stopping
+Fold score: 0.7900817719440089
+Expected number of inputs: 20
+Train on 588000 samples, validate on 12000 samples
+Epoch 1/100
+588000/588000 [==============================] - 9s 15us/sample - loss: 0.4081 - accuracy: 0.8216 - auc: 0.7695 - val_loss: 0.3960 - val_accuracy: 0.8278 - val_auc: 0.7865
+Epoch 21/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4076 - accuracy: 0.8217 - auc: 0.7704 - val_loss: 0.3957 - val_accuracy: 0.8275 - val_auc: 0.7868
+Epoch 22/100
+588000/588000 [==============================] - 9s 16us/sample - loss: 0.4078 - accuracy: 0.8221 - auc: 0.7700 - val_loss: 0.3960 - val_accuracy: 0.8272 - val_auc: 0.7868
+Epoch 23/100
+344064/588000 [================>.............] - ETA: 4s - loss: 0.4071 - accuracy: 0.8218 - auc: 0.7714
+
+
+
+
+print('Mean score:', np.mean(scores))
+
+Mean score: 0.7860546615549027
+
+Visualize----------
+
+import matplotlib.pyplot as plt
+
+
+fig, axs = plt.subplots(3, 2, figsize=(18,18))
+
+# AUC
+for h in histories:
+    axs[0,0].plot(h.history['auc'], color='g')
+axs[0,0].set_title('Model AUC - Train')
+axs[0,0].set_ylabel('AUC')
+axs[0,0].set_xlabel('Epoch')
+
+for h in histories:
+    axs[0,1].plot(h.history['val_auc'], color='b')
+axs[0,1].set_title('Model AUC - Test')
+axs[0,1].set_ylabel('AUC')
+axs[0,1].set_xlabel('Epoch')
+
+# accuracy
+for h in histories:
+    axs[1,0].plot(h.history['accuracy'], color='g')
+axs[1,0].set_title('Model accuracy - Train')
+axs[1,0].set_ylabel('Accuracy')
+axs[1,0].set_xlabel('Epoch')
+
+for h in histories:
+    axs[1,1].plot(h.history['val_accuracy'], color='b')
+axs[1,1].set_title('Model accuracy - Test')
+axs[1,1].set_ylabel('Accuracy')
+axs[1,1].set_xlabel('Epoch')
+
+# loss
+for h in histories:
+    axs[2,0].plot(h.history['loss'], color='g')
+axs[2,0].set_title('Model loss - Train')
+axs[2,0].set_ylabel('Loss')
+axs[2,0].set_xlabel('Epoch')
+
+for h in histories:
+    axs[2,1].plot(h.history['val_loss'], color='b')
+axs[2,1].set_title('Model loss - Test')
+axs[2,1].set_ylabel('Loss')
+axs[2,1].set_xlabel('Epoch')
+
+fig.show()
+
+
+
+
+Predict--------------
+
+len(trained_estimators)
+
+50
+
+y_pred = np.zeros(x_test.shape[0])
+x_test_inputs = make_inputs(x_test, categorial_part)
+for estimator in trained_estimators:
+    y_pred += estimator.predict(x_test_inputs).reshape(-1) / len(trained_estimators)
+
+y_pred_keras = y_pred
+
+
+
+
+Blend Logit and Keras---------
+
+y_pred = np.add(y_pred_logit, y_pred_keras) / 2
+
+Submit predictions
+
+submission = pd.read_csv('../input/cat-in-the-dat-ii/sample_submission.csv', index_col='id')
+submission['target'] = y_pred
+submission.to_csv('logit_keras.csv')
+
+submission.head()
+
+
