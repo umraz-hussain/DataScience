@@ -1,0 +1,121 @@
+# Code you have previously used to load data
+import pandas as pd
+
+# Path of the file to read
+iowa_file_path = '../input/home-data-for-ml-course/train.csv'
+
+home_data = pd.read_csv(iowa_file_path)
+
+# Set up code checking
+from learntools.core import binder
+binder.bind(globals())
+from learntools.machine_learning.ex3 import *
+
+print("Setup Complete")
+
+-----------Setup Complete-------------------
+
+
+Specify Prediction Target
+
+# print the list of columns in the dataset to find the name of the prediction target
+home_data.columns
+
+Index(['Id', 'MSSubClass', 'MSZoning', 'LotFrontage', 'LotArea', 'Street',
+       'Alley', 'LotShape', 'LandContour', 'Utilities', 'LotConfig',
+       'LandSlope', 'Neighborhood', 'Condition1', 'Condition2', 'BldgType',
+       'HouseStyle', 'OverallQual', 'OverallCond', 'YearBuilt', 'YearRemodAdd',
+       'RoofStyle', 'RoofMatl', 'Exterior1st', 'Exterior2nd', 'MasVnrType',
+       'MasVnrArea', 'ExterQual', 'ExterCond', 'Foundation', 'BsmtQual',
+       'BsmtCond', 'BsmtExposure', 'BsmtFinType1', 'BsmtFinSF1',
+       'BsmtFinType2', 'BsmtFinSF2', 'BsmtUnfSF', 'TotalBsmtSF', 'Heating',
+       'HeatingQC', 'CentralAir', 'Electrical', '1stFlrSF', '2ndFlrSF',
+       'LowQualFinSF', 'GrLivArea', 'BsmtFullBath', 'BsmtHalfBath', 'FullBath',
+       'HalfBath', 'BedroomAbvGr', 'KitchenAbvGr', 'KitchenQual',
+       'TotRmsAbvGrd', 'Functional', 'Fireplaces', 'FireplaceQu', 'GarageType',
+       'GarageYrBlt', 'GarageFinish', 'GarageCars', 'GarageArea', 'GarageQual',
+       'GarageCond', 'PavedDrive', 'WoodDeckSF', 'OpenPorchSF',
+       'EnclosedPorch', '3SsnPorch', 'ScreenPorch', 'PoolArea', 'PoolQC',
+       'Fence', 'MiscFeature', 'MiscVal', 'MoSold', 'YrSold', 'SaleType',
+       'SaleCondition', 'SalePrice'],
+      dtype='object')
+
+
+y = home_data.SalePrice
+
+step_1.check()
+
+# The lines below will show you a hint or the solution.
+# step_1.hint() 
+# step_1.solution()
+
+Create X----------
+
+# Create the list of features below
+feature_names = ['LotArea','YearBuilt','1stFlrSF','2ndFlrSF','FullBath','BedroomAbvGr','TotRmsAbvGrd']
+
+# select data corresponding to features in feature_names
+X = home_data[feature_names]
+
+step_2.check()
+
+# step_2.hint()
+# step_2.solution()
+
+Review Data------
+
+# Review data
+# print description or statistics from X
+print(X.describe())
+
+# print the top few lines
+print(X.head())
+
+             LotArea    YearBuilt      ...       BedroomAbvGr  TotRmsAbvGrd
+count    1460.000000  1460.000000      ...        1460.000000   1460.000000
+mean    10516.828082  1971.267808      ...           2.866438      6.517808
+std      9981.264932    30.202904      ...           0.815778      1.625393
+min      1300.000000  1872.000000      ...           0.000000      2.000000
+25%      7553.500000  1954.000000      ...           2.000000      5.000000
+50%      9478.500000  1973.000000      ...           3.000000      6.000000
+75%     11601.500000  2000.000000      ...           3.000000      7.000000
+max    215245.000000  2010.000000      ...           8.000000     14.000000
+
+[8 rows x 7 columns]
+   LotArea  YearBuilt      ...       BedroomAbvGr  TotRmsAbvGrd
+0     8450       2003      ...                  3             8
+1     9600       1976      ...                  3             6
+2    11250       2001      ...                  3             6
+3     9550       1915      ...                  3             7
+4    14260       2000      ...                  4             9
+
+[5 rows x 7 columns]
+
+Specify and Fit Model-------
+
+from sklearn.tree import DecisionTreeRegressor
+#specify the model. 
+#For model reproducibility, set a numeric value for random_state when specifying the model
+iowa_model = DecisionTreeRegressor(random_state=1)
+
+# Fit the model
+iowa_model.fit(X,y)
+
+step_3.check()
+
+# step_3.hint()
+# step_3.solution()
+
+Make Predictions-------
+
+predictions = iowa_model.predict(X)
+print(predictions)
+step_4.check()
+
+[208500. 181500. 223500. ... 266500. 142125. 147500.]
+
+# step_4.hint()
+# step_4.solution()
+
+
+
