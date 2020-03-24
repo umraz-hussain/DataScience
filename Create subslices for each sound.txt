@@ -1,0 +1,149 @@
+import pandas as pd
+import numpy as np
+import math
+
+import librosa as lb # https://librosa.github.io/librosa/
+import soundfile as sf # https://pysoundfile.readthedocs.io/en/latest/
+
+import os
+
+import matplotlib.pyplot as plt
+from matplotlib.cbook import boxplot_stats
+
+---------!ls ../input/respiratory-sound-database/respiratory_sound_database/Respiratory_Sound_Database
+
+audio_and_txt_files	  filename_format.txt
+filename_differences.txt  patient_diagnosis.csv------------
+
+#load patient diagnosis.csv
+
+diag_csv = '../input/respiratory-sound-database/respiratory_sound_database/Respiratory_Sound_Database/patient_diagnosis.csv'
+diagnosis = pd.read_csv(diag_csv, names=['pId', 'diagnosis'])
+diagnosis.head()
+
+
+ds = diagnosis['diagnosis'].unique()
+ds
+
+array(['URTI', 'Healthy', 'Asthma', 'COPD', 'LRTI', 'Bronchiectasis',
+       'Pneumonia', 'Bronchiolitis'], dtype=object)
+
+
+#get all text files
+audio_text_loc = '../input/respiratory-sound-database/respiratory_sound_database/Respiratory_Sound_Database/audio_and_txt_files'
+files = [s.split('.')[0] for s in os.listdir(path = audio_text_loc) if '.txt' in s]
+files
+
+def tokenize_file(filename):
+    return filename.split('_')
+
+#read each file
+
+files_ = []
+for f in files:
+    df = pd.read_csv(audio_text_loc + '/' + f + '.txt', sep='\t', names=['start', 'end', 'crackles', 'wheezes'])
+    df['filename'] = f
+    #get filename features
+    f_features = tokenize_file(f)
+    df['pId'] = f_features[0]
+    df['ac_mode'] = f_features[3]
+    
+    files_.append(df)
+    
+files_df = pd.concat(files_)
+files_df.reset_index()
+files_df.head()
+
+
+files_df.info()
+
+diagnosis.info()
+
+files_df['pId'] = files_df['pId'].astype('float64')
+files_df.info()
+
+files_df = pd.merge(files_df, diagnosis, on='pId')
+files_df.head()
+
+#code taken from eatmygoose https://www.kaggle.com/eatmygoose/cnn-detection-of-wheezes-and-crackles
+def slice_data(start, end, raw_data,  sample_rate):
+    max_ind = len(raw_data) 
+    start_ind = min(int(start * sample_rate), max_ind)
+    end_ind = min(int(end * sample_rate), max_ind)
+    return raw_data[start_ind: end_ind]
+
+files_df['len_per_slice'] = files_df['end'].sub(files_df['start'], axis = 0) 
+max_len_per_slice = max(files_df['len_per_slice'])
+max_len_per_slice
+
+plt.scatter(files_df['len_per_slice'], y=files_df.index)
+
+<matplotlib.collections.PathCollection at 0x7f9869422b38>
+
+box = plt.boxplot(files_df['len_per_slice'])
+
+force_max_len = math.ceil(boxplot_stats(files_df['len_per_slice'])[0]['whishi'])
+force_max_len
+
+def compute_len(samp_rate=22050, time=force_max_len, acquisition_mode=0):
+    '''Computes the supposed length of sliced data
+        samp_size = sample size from the data
+        samp_rate = sampling rate. by default since we're working on 24-bit files, we'll use 96kHz
+        time = length of time for the audio file. by default we'll use the max we have which is 5.48
+        acquisition_mode = either mono or stereo. 0 for mono, 1 for stereo
+    '''
+    comp_len = 0
+    if acquisition_mode == 1: #ac mode is single channel which means it's 'mono'
+        comp_len = samp_rate * time
+    else: #stereo
+        comp_len = (samp_rate * time) * 2
+
+    return comp_len
+
+
+
+#create output path
+os.makedirs('output')
+
+for d in ds:
+    path = os.path.join('output', d)
+    os.makedirs(path)
+
+!ls
+
+i = 0 #iterator for file naming
+
+for idx, row in files_df.iterrows():
+    filename = row['filename']
+    start = row['start']
+    end = row['end']
+    diag = row['diagnosis']
+    
+    #check len and force to 6 sec if more than that
+    if force_max_len < end - start:
+        end = start + force_max_len
+    
+    aud_loc = audio_text_loc + '/' + f + '.wav'
+    
+    if idx != 0:
+        if files_df.iloc[idx-1]['filename'] == filename:
+            i=i+1
+        else:
+            i=0
+    n_filename = filename + '_' + str(i) + '.wav'
+    path = 'output/' + diag + '/' + n_filename
+    
+    print('processing ' + n_filename + '...')
+
+    data, samplingrate = lb.load(aud_loc)
+    sliced_data = slice_data(start=start, end=end, raw_data=data, sample_rate=samplingrate)
+    
+    #pad audio if < forced_max_len
+    a_len = compute_len(samp_rate=samplingrate, acquisition_mode=row['ac_mode']=='sc')
+    padded_data = lb.util.pad_center(sliced_data, a_len)
+
+    sf.write(file=path, data=padded_data, samplerate=samplingrate)
+
+https://www.kaggle.com/danaelisanicolas/cnn-part-1-create-subslices-for-each-sound
+
+
